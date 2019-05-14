@@ -1,6 +1,6 @@
 # kotlin-raft
 
-This is implementation of [Raft](https://en.wikipedia.org/wiki/Raft_(computer_science) algorithm on Kotlin language.  
+This is implementation of [Raft](https://en.wikipedia.org/wiki/Raft_(computer_science)) algorithm on Kotlin language.  
 
 ### Build
 `./gradlew build`

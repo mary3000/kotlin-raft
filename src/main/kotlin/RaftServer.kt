@@ -49,6 +49,8 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
 
     private var convertTo = Channel<State>(capacity = Channel.CONFLATED)
 
+    private var electionCoro: Job
+
     private var electionTimer = ElectionTimer(convertTo)
 
     private var heartbeats = Timer()
@@ -64,16 +66,12 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
         cluster = ports.filter { p -> p != port }.map { p -> RaftMember(p) }.toTypedArray()
         majority = ports.size / 2 + 1
         electionTimer.waitForHeartbeats()
-        var electionCoro: Job = Job()
+        electionCoro = Job()
         var prevElectionCoro: Job
 
         GlobalScope.launch {
             for (newState in convertTo) {
-                currentState = newState
-                heartbeats.cancel()
-                electionTimer.cancel()
-                electionCoro.cancel()
-
+                updateState(newState)
                 when (newState) {
                     State.Candidate -> {
                         electionTimer.waitForElection()
@@ -98,6 +96,13 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
         }
 
         startServer()
+    }
+
+    private fun updateState(newState: State) {
+        currentState = newState
+        heartbeats.cancel()
+        electionTimer.cancel()
+        electionCoro.cancel()
     }
 
     private fun startServer() {
@@ -129,7 +134,30 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
         currentTerm.incrementAndGet()
         votedFor = port
 
-        val votes = cluster.map {
+        val votes = collectVotes()
+        waitForMajority(votes)
+    }
+
+    private suspend fun waitForMajority(votes: List<Deferred<Int>>) {
+        var cnt = 0
+        var finished = false
+        while (!finished) {
+            select<Unit> {
+                votes.forEach {
+                    it.onAwait { res ->
+                        cnt += res
+                        if (cnt >= majority) {
+                            finished = true
+                            convertTo.send(State.Leader)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun collectVotes(): List<Deferred<Int>> {
+        return cluster.map {
             GlobalScope.async {
                 val response = kotlin.runCatching {
                     it.channel.requestVote(
@@ -148,22 +176,6 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
                 }
             }
         }
-
-        var cnt = 0
-        var finished = false
-        while (!finished) {
-            select<Unit> {
-                votes.forEach {
-                    it.onAwait { res ->
-                        cnt += res
-                        if (cnt >= majority) {
-                            finished = true
-                            convertTo.send(State.Leader)
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private fun sendHeartBeats() {
@@ -173,29 +185,24 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
             logger.info("sendHeartBeats $currentState port: $port, votedFor: $votedFor, term: ${currentTerm.get()}")
             cluster.forEach {
                 val res = kotlin.runCatching {
-                    val entry = Entries.newBuilder().setTerm(currentTerm.get()).setLeaderId(port).setLeaderCommit(commitIndex)
-                    val entryToSend = log.entryAt(it.nextIndex)
-                    if (entryToSend != null) {
-                        entry.addEntries(entryToSend)
-                    }
+                    val nextIndex = it.nextIndex
                     val response = it.channel.appendEntries(
-                        entry.setPrevLogIndex(it.nextIndex - 1)
-                            .setPrevLogTerm(log.termAt(it.nextIndex - 1))
-                            .build()
+                        initEntry(nextIndex)
                     )
                     if (response.success) {
-                        it.matchIndex = it.nextIndex
-                        if (log.lastIndex() >= it.nextIndex) {
+                        it.matchIndex = nextIndex
+                        if (log.lastIndex() >= nextIndex) {
                             it.nextIndex += 1
                         }
                     } else if (response.term <= currentTerm.get()) {
-                        assert(it.nextIndex > 0)
+                        assert(nextIndex > 0)
                         it.nextIndex -= 1
                     } else {
+                        // Found out that term is outdated
                         GlobalScope.launch { convertTo.send(State.Follower) }
                         return@fixedRateTimer
                     }
-                    updateCommitted()
+                    updateCommitIndex()
                 }
                 if (res.isFailure) {
                     logger.info("sendHeartBeats catched $res")
@@ -204,7 +211,21 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
         }
     }
 
-    private fun updateCommitted() {
+    private fun initEntry(nextIndex: Int): Entries {
+        val entry = Entries.newBuilder()
+            .setTerm(currentTerm.get())
+            .setLeaderId(port)
+            .setLeaderCommit(commitIndex)
+            .setPrevLogIndex(nextIndex - 1)
+            .setPrevLogTerm(log.termAt(nextIndex - 1))
+        val entryToSend = log.entryAt(nextIndex)
+        if (entryToSend != null) {
+            entry.addEntries(entryToSend)
+        }
+        return entry.build()
+    }
+
+    private fun updateCommitIndex() {
         var commitCandidate = commitIndex + 1
         while (log.lastIndex() >= commitCandidate && log.termAt(commitCandidate) == currentTerm.get()) {
             val matchSum = cluster.sumBy { if (it.matchIndex >= commitCandidate) 1 else 0 }

@@ -20,7 +20,7 @@ RaftServer
 port: 5130 
 leader port: 5110
 currentTerm: 1 
-log: [0]{term: 1 | command: yeah6} [1]{term: 1 | command: yeah6} [2]{term: 1 | command: yeah6} [3]{term: 1 | command: yeah6} [4]{term: 1 | command: yeah6} [5]{term: 1 | command: yeah6}  
+log: [0]{term: 1 | command: yeah6} [1]{term: 1 | command: yeah6} [2]{term: 1 | command: yeah6}
 commitIndex: 5 
 lastApplied: -1
 ``` 

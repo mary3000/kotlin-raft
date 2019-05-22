@@ -22,6 +22,7 @@ import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.logging.Logger
 import kotlin.concurrent.fixedRateTimer
+import kotlin.coroutines.coroutineContext
 
 @ExperimentalCoroutinesApi
 class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftServerImplBase() {
@@ -141,7 +142,7 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
     private suspend fun waitForMajority(votes: List<Deferred<Int>>) {
         var cnt = 0
         var finished = false
-        while (!finished) {
+        while (!finished && coroutineContext[Job]!!.isActive) {
             select<Unit> {
                 votes.forEach {
                     it.onAwait { res ->

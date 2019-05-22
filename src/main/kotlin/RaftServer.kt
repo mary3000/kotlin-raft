@@ -32,9 +32,9 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
 
     private val majority: Int
 
-    private var currentTerm = AtomicInteger(0)
-
     private val heartBeatDelay: Long = 1000
+
+    private var currentTerm = AtomicInteger(0)
 
     @Volatile
     private var votedFor = -1
@@ -42,10 +42,10 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
     @Volatile
     private var commitIndex = -1
 
-    private var log = RaftLog()
-
     //TODO: RSM
     private var lastApplied = -1
+
+    private var log = RaftLog()
 
     private var convertTo = Channel<State>(capacity = Channel.CONFLATED)
 
@@ -61,20 +61,31 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
     var currentState: State = State.Follower
 
     init {
-        cluster = ports.filter { p -> p != port }.sorted().map { p -> RaftMember(p) }.toTypedArray()
+        cluster = ports.filter { p -> p != port }.map { p -> RaftMember(p) }.toTypedArray()
         majority = ports.size / 2 + 1
         electionTimer.waitForHeartbeats()
+        var electionCoro: Job = Job()
+        var prevElectionCoro: Job
 
         GlobalScope.launch {
             for (newState in convertTo) {
                 currentState = newState
                 heartbeats.cancel()
                 electionTimer.cancel()
+                electionCoro.cancel()
 
                 when (newState) {
                     State.Candidate -> {
                         electionTimer.waitForElection()
-                        launch { beginElection() }
+                        prevElectionCoro = electionCoro
+                        electionCoro = launch {
+                            try {
+                                prevElectionCoro.join()
+                            } catch (e: CancellationException) {
+                                // do nothing
+                            }
+                            beginElection()
+                        }
                     }
                     State.Follower -> {
                         electionTimer.waitForHeartbeats()
@@ -102,7 +113,7 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
                     if (currentState == State.Leader) {
                         val command = call.receiveText()
                         log.append(command, currentTerm.get())
-                        call.respondText("Log: $log")
+                        call.respondText("Log: $log\n")
                     } else {
                         call.response.header("Location", "http://127.0.0.1:${votedFor + toKtorPort}/")
                         call.respond(HttpStatusCode.TemporaryRedirect, "redirected to leader")
@@ -140,22 +151,18 @@ class RaftServer(private val port: Int, ports: IntArray) : RaftServerGrpc.RaftSe
 
         var cnt = 0
         var finished = false
-        // TODO: wrong! Should be synchronized with electionTimer
-        withTimeoutOrNull(electionTimer.timeout) {
-            while (!finished) {
-                select<Unit> {
-                    votes.forEach {
-                        it.onAwait { res ->
-                            cnt += res
-                            if (cnt >= majority) {
-                                finished = true
-                                convertTo.send(State.Leader)
-                            }
+        while (!finished) {
+            select<Unit> {
+                votes.forEach {
+                    it.onAwait { res ->
+                        cnt += res
+                        if (cnt >= majority) {
+                            finished = true
+                            convertTo.send(State.Leader)
                         }
                     }
                 }
             }
-            1
         }
     }
 

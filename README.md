@@ -27,6 +27,8 @@ lastApplied: -1
 
 On POST you will be redirected to the leader and the command you sent will be applied to the log.
 
+Example: `curl -L --data "cmd" "http://127.0.0.1:5110/"` (`-L` for redirection to leader)
+
 ### Note
 Probably now it suffers from bugs. Sorry ¯\_(ツ)_/¯
 

@@ -5,10 +5,10 @@ This is implementation of [Raft](https://en.wikipedia.org/wiki/Raft_(computer_sc
 ### Build
 `./gradlew build`
 
-`RaftWerver.kt` runs one instance of node in the cluster.  
+`RaftServer.kt` runs one instance of node in the cluster.  
 Parameters: `$port1 $port2 ... $portn $number`  
-`portn` - port for $n$th node  
-`number` - number of port for this instance of node
+`$portn` - port for nth node  
+`$number` - number of port for this instance of node
 
 ### Usage
 
